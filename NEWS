@@ -1,6 +1,18 @@
 w3lib release notes
 ===================
 
+2.6.1 (unreleased)
+------------------
+
+- :func:`~w3lib.url.url_query_cleaner` now matches percent-encoded parameter
+  names, e.g. ``%66oo`` or ``a%20b``, against the names it is given, the way
+  :func:`~w3lib.url.url_query_parameter` and
+  :func:`~w3lib.url.add_or_replace_parameter` already did, instead of only
+  matching the names as they are spelled in the URL. Names that decode to the
+  same bytes are treated as the same name by duplicate removal and removal as
+  well. Retained parameters keep their original spelling, and a malformed
+  escape is part of the name, as elsewhere in the query parameter code path.
+
 2.6.0 (2026-11-05)
 ------------------
 

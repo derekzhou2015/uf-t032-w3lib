@@ -41,6 +41,7 @@ from ._url import (
     _split_params,
     _strip,
     _unquote,
+    _unquote_plus,
     _url2pathname,
     _urlencode,
     _urlparse,
@@ -315,6 +316,19 @@ def is_url(text: str) -> bool:
     return text.startswith(prefixes) or text[:8].lower().startswith(prefixes)
 
 
+def _query_key_bytes(key: str) -> bytes:
+    """Return the bytes that a parameter name from a raw query string is decoded
+    to, the way :func:`url_query_parameter` and
+    :func:`add_or_replace_parameter` decode it.
+
+    A name without ``%`` or ``+`` is its own decoded form. Malformed escapes
+    are kept as is, as everywhere else in the query parameter code path.
+    """
+    if "%" in key or "+" in key:
+        return _unquote_plus(key.encode())
+    return key.encode()
+
+
 @overload
 def url_query_parameter(
     url: str | bytes,
@@ -418,6 +432,21 @@ def url_query_cleaner(
     'product.html?name=wired'
     >>>
 
+    Parameter names are decoded before being compared, the same way
+    :func:`url_query_parameter` and :func:`add_or_replace_parameter` do, so
+    that a percent-encoded spelling of a name matches that name:
+
+    >>> w3lib.url.url_query_cleaner("product.html?id=1&%69d=2&foo=bar", ['id'])
+    'product.html?id=1'
+    >>> w3lib.url.url_query_cleaner("product.html?%66oo=bar", ['foo'], remove=True)
+    'product.html'
+    >>>
+
+    Names that decode to the same bytes are the same name. With ``unique``
+    (the default), only the first of them is kept, in its original spelling;
+    with ``remove``, all of them are removed. Retained parameters are returned
+    exactly as they appear in *url*, without being re-encoded.
+
     By default, URL fragments are removed. If you need to preserve fragments,
     pass the ``keep_fragments`` argument as ``True``.
 
@@ -438,9 +467,15 @@ def url_query_cleaner(
     if not query or (not parameterlist and not remove):
         return base if not (keep_fragments and fragment) else f"{base}#{fragment}"
 
-    param_lookup = frozenset(parameterlist)
+    # Names in *url* are decoded before being compared, e.g. "%66oo" as
+    # "foo", so the names to match are encoded to the bytes that the decoded
+    # names of the query are compared in. A name given as bytes, which the
+    # parameter list does not support, still matches nothing.
+    param_lookup = frozenset(
+        name.encode() for name in parameterlist if isinstance(name, str)
+    )
 
-    seen: set[str] | None = set() if unique else None
+    seen: set[bytes] | None = set() if unique else None
     result: list[str] = []
 
     for ksv in query.split(sep):
@@ -449,15 +484,22 @@ def url_query_cleaner(
 
         k, _, _ = ksv.partition(kvsep)
 
+        # Parameter names are compared the way the other query-parameter
+        # functions compare them, i.e. after percent-decoding and '+' -> ' '
+        # substitution, so that an encoded name matches the name it encodes.
+        # Malformed escapes are left as is, as elsewhere in the query
+        # parameter code path.
+        k_bytes = _query_key_bytes(k)
+
         if seen is not None:
-            if k in seen:
+            if k_bytes in seen:
                 continue
-            seen.add(k)
+            seen.add(k_bytes)
 
         if remove:
-            if k in param_lookup:
+            if k_bytes in param_lookup:
                 continue
-        elif k not in param_lookup:
+        elif k_bytes not in param_lookup:
             continue
 
         result.append(ksv)

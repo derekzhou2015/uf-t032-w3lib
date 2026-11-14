@@ -1405,6 +1405,105 @@ class TestUrl:
             == "product.html"
         )
 
+    @pytest.mark.parametrize(
+        ("query", "name", "value"),
+        [
+            # plain ASCII, as a baseline
+            ("?foo=1", "foo", "1"),
+            # a percent-encoded letter
+            ("?%66oo=1", "foo", "1"),
+            # an encoded space, spelled either as %20 or as '+'
+            ("?a%20b=1", "a b", "1"),
+            ("?a+b=1", "a b", "1"),
+            # a non-ASCII name, encoded as UTF-8
+            ("?%C3%A9=1", "é", "1"),
+            ("?%E2%9C%93=1", "✓", "1"),
+            # a key containing characters that are query delimiters
+            ("?a%26b=1", "a&b", "1"),
+            ("?a%3db=1", "a=b", "1"),
+            # a malformed escape is part of the name, as in urllib.parse
+            ("?a%zz=1", "a%zz", "1"),
+            # an escape of a character that is also left as is
+            ("?%41=1", "A", "1"),
+        ],
+    )
+    def test_encoded_parameter_names_agree_across_functions(
+        self, query: str, name: str, value: str
+    ) -> None:
+        # All functions that take a parameter name match it against the decoded
+        # query parameter names, including url_query_cleaner().
+        assert url_query_parameter(query, name) == value
+
+        assert url_query_cleaner(query, [name]) == query
+        assert url_query_cleaner(query, [name], remove=True) == ""
+
+        replaced = add_or_replace_parameter(query, name, "2")
+        assert url_query_parameter(replaced, name) == "2"
+        # the matching parameter is replaced, no second one is appended
+        assert replaced.count("=") == 1
+
+    def test_url_query_cleaner_preserves_parameter_spelling(self):
+        # Retained parameters keep the spelling they have in the URL, whether
+        # or not it is the spelling of the parameter name that was passed.
+        assert (
+            url_query_cleaner("product.html?id=200&%69d=2&foo=bar", ["id"])
+            == "product.html?id=200"
+        )
+        assert (
+            url_query_cleaner("product.html?%69d=200&foo=bar", ["id"])
+            == "product.html?%69d=200"
+        )
+        assert (
+            url_query_cleaner("product.html?a+b=1&name=wired", ["a b", "name"])
+            == "product.html?a+b=1&name=wired"
+        )
+        # A malformed escape is kept as is, and does not raise.
+        assert (
+            url_query_cleaner("product.html?%zz=1&foo=bar", ["%zz"])
+            == "product.html?%zz=1"
+        )
+        assert (
+            url_query_cleaner("product.html?%zz=1&foo=bar", ["%zz"], remove=True)
+            == "product.html?foo=bar"
+        )
+        # bytes items are not supported as parameter names, and match nothing,
+        # as documented for the parameterlist argument.
+        assert (
+            url_query_cleaner("product.html?id=1&foo=bar", [b"id"]) == "product.html"
+        )
+        assert (
+            url_query_cleaner("product.html?id=1&foo=bar", [b"id"], remove=True)
+            == "product.html?id=1&foo=bar"
+        )
+
+    def test_url_query_cleaner_non_utf8_parameter_name(self):
+        # A name spelled in a non-UTF-8 encoding is not the same name as any
+        # text, consistently across the functions of the query parameter family.
+        url = "product.html?%E9=1&foo=bar"
+        assert url_query_parameter(url, "é") is None
+        assert url_query_cleaner(url, ["é"]) == "product.html"
+        assert url_query_cleaner(url, ["é"], remove=True) == url
+
+    def test_url_query_cleaner_encoded_duplicate_names(self):
+        # Twin names that decode to the same bytes are the same name: the first
+        # one wins, as with the other functions, and all of them are removed in
+        # remove mode.
+        url = "product.html?d=1&%64=2&d=3"
+        assert url_query_cleaner(url, ["d"]) == "product.html?d=1"
+        assert url_query_cleaner(url, ["d"], unique=False) == url
+        assert url_query_cleaner(url, ["d"], remove=True) == "product.html"
+        assert (
+            url_query_cleaner(url, ["d"], remove=True, unique=False)
+            == "product.html"
+        )
+        # url_query_parameter() and add_or_replace_parameter() treat the
+        # percent-encoded spelling as the same name too.
+        assert url_query_parameter(url, "d") == "1"
+        assert add_or_replace_parameter(url, "d", "0") == "product.html?d=0"
+        # the twin is not duplicated when the name is added instead
+        url = "product.html?%64=1&d=2"
+        assert add_or_replace_parameter(url, "d", "0") == "product.html?d=0"
+
     def test_path_to_file_uri(self):
         if os.name == "nt":
             assert (
@@ -1571,6 +1670,20 @@ class TestUrlQueryCleanerProperties:
     @given(hyp_urls())
     def test_no_exception(self, url: str) -> None:
         url_query_cleaner(url)
+
+    @given(
+        st.text(min_size=1, alphabet=st.characters(exclude_categories=("Cs",))),
+        st.text(min_size=1, alphabet=st.characters(exclude_categories=("Cs",))),
+    )
+    def test_parameter_names_match_the_query_parameter_family(
+        self, name: str, value: str
+    ) -> None:
+        # The name is percent-encoded when written to the query, and still
+        # recognized by every function that takes a parameter name.
+        url = add_or_replace_parameter("product.html", name, value)
+        assert url_query_parameter(url, name, keep_blank_values=True) == value
+        assert url_query_cleaner(url, [name]) == url
+        assert url_query_cleaner(url, [name], remove=True) == "product.html"
 
 
 class TestAddOrReplaceParameterProperties:
